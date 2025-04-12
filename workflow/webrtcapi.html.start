@@ -1,0 +1,59 @@
+```mermaid
+flowchart TD
+    Start[/"webrtcapi.html
+    点击Start按钮
+    触发start()函数"/]
+
+    subgraph client.js - 客户端处理
+        CreatePC["创建RTCPeerConnection
+        配置ICE服务器"]
+        
+        GetMedia["getUserMedia()
+        获取本地音视频流"]
+        
+        AddTracks["addTrack()
+        添加音视频轨道"]
+        
+        CreateOffer["createOffer()
+        创建连接请求"]
+        
+        SetLocal["setLocalDescription()
+        设置本地会话描述"]
+        
+        SendOffer["fetch('/offer')
+        发送offer到服务端"]
+    end
+
+    Start --> CreatePC
+    CreatePC --> GetMedia
+    GetMedia --> AddTracks
+    AddTracks --> CreateOffer
+    CreateOffer --> SetLocal
+    SetLocal --> SendOffer
+
+    subgraph app.py - 服务端处理
+        OfferEndpoint["@app.post('/offer')
+        接收offer请求"]
+        
+        CreateSession["create_session()
+        创建新的会话ID"]
+        
+        InitPeer["初始化RTCPeerConnection
+        处理接收到的offer"]
+        
+        CreateAnswer["创建并返回answer
+        建立WebRTC连接"]
+    end
+
+    SendOffer --> OfferEndpoint
+    OfferEndpoint --> CreateSession
+    CreateSession --> InitPeer
+    InitPeer --> CreateAnswer
+
+    ReturnAnswer["返回answer到客户端
+    完成连接建立"]
+    CreateAnswer --> ReturnAnswer
+
+    style Start fill:#f9f,stroke:#333,stroke-width:4px
+    style ReturnAnswer fill:#bbf,stroke:#333,stroke-width:4px
+```

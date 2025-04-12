@@ -56,7 +56,7 @@ avatar = None
         
 
 #####webrtc###############################
-pcs = set()     # 存储所有WebRTC对等连接对象的集合
+pcs = set()
 
 def randN(N)->int:
     '''生成长度为 N的随机数 '''
@@ -68,7 +68,7 @@ def build_nerfreal(sessionid:int)->BaseReal:
     opt.sessionid=sessionid
     if opt.model == 'wav2lip':
         from lipreal import LipReal
-        nerfreal = LipReal(opt,model,avatar) 
+        nerfreal = LipReal(opt,model,avatar)
     elif opt.model == 'musetalk':
         from musereal import MuseReal
         nerfreal = MuseReal(opt,model,avatar)
@@ -81,79 +81,50 @@ def build_nerfreal(sessionid:int)->BaseReal:
     return nerfreal
 
 #@app.route('/offer', methods=['POST'])
-async def offer(request): 
-    """
-    创建WebRTC连接
-    """
-    # 从HTTP请求中解析JSON数据
+async def offer(request):
     params = await request.json()
-    # 创建WebRTC会话描述对象，包含SDP和类型信息
     offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
 
-    # 检查当前会话数是否已达到最大限制
     if len(nerfreals) >= opt.max_session:
         logger.info('reach max session')
-
-
         return -1
-    # 生成6位随机数作为会话ID
-    sessionid = randN(6) 
+    sessionid = randN(6) #len(nerfreals)
     logger.info('sessionid=%d',sessionid)
-    # 先用None占位，防止并发问题
     nerfreals[sessionid] = None
-    # 在单独的线程中构建数字人实例，避免阻塞主事件循环
-    nerfreal = await asyncio.get_event_loop().run_in_executor(None, build_nerfreal, sessionid)
-    # 将创建好的数字人实例存入全局字典
-    nerfreals[sessionid] = nerfreal     #  包含 全身图帧 和 对应面部图帧
+    nerfreal = await asyncio.get_event_loop().run_in_executor(None, build_nerfreal,sessionid)
+    nerfreals[sessionid] = nerfreal
     
-    # 创建WebRTC对等连接对象
     pc = RTCPeerConnection()
-    # 将连接对象添加到全局集合中以便后续管理
     pcs.add(pc)
 
-    # 定义连接状态变化的回调函数
     @pc.on("connectionstatechange")
     async def on_connectionstatechange():
-        # 记录当前连接状态变化
         logger.info("Connection state is %s" % pc.connectionState)
-        # 如果连接失败，关闭连接并清理资源
         if pc.connectionState == "failed":
             await pc.close()
             pcs.discard(pc)
             del nerfreals[sessionid]
-        # 如果连接关闭，清理资源
         if pc.connectionState == "closed":
             pcs.discard(pc)
             del nerfreals[sessionid]
 
-    # 创建人物播放器，关联到对应的数字人实例
     player = HumanPlayer(nerfreals[sessionid])
-    # 添加音频轨道到WebRTC连接
-    audio_sender = pc.addTrack(player.audio)    # 相当于接收音频的queue
-    # 添加视频轨道到WebRTC连接
+    audio_sender = pc.addTrack(player.audio)
     video_sender = pc.addTrack(player.video)
-    # 获取视频编解码器能力列表
     capabilities = RTCRtpSender.getCapabilities("video")
-    # 筛选H264编解码器并设为首选
     preferences = list(filter(lambda x: x.name == "H264", capabilities.codecs))
-    # 添加VP8编解码器作为备选
     preferences += list(filter(lambda x: x.name == "VP8", capabilities.codecs))
-    # 添加rtx编解码器支持（用于视频包重传）
     preferences += list(filter(lambda x: x.name == "rtx", capabilities.codecs))
-    # 获取视频收发器（索引1对应视频轨道）
     transceiver = pc.getTransceivers()[1]
-    # 设置编解码器优先级顺序
     transceiver.setCodecPreferences(preferences)
 
-    # 设置远程描述（客户端的offer）
     await pc.setRemoteDescription(offer)
 
-    # 创建应答SDP
     answer = await pc.createAnswer()
-    # 设置本地描述（服务器的answer）
     await pc.setLocalDescription(answer)
 
-    # 返回JSON格式的应答信息，包含SDP、类型和会话ID
+    #return jsonify({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
+
     return web.Response(
         content_type="application/json",
         text=json.dumps(
@@ -161,7 +132,6 @@ async def offer(request):
         ),
     )
 
-# 处理客户端submit请求(点击send按钮)
 async def human(request):
     params = await request.json()
 
@@ -261,7 +231,7 @@ async def post(url,data):
         logger.info(f'Error: {e}')
 
 async def run(push_url,sessionid):
-    nerfreal = await asyncio.get_event_loop().run_in_executor(None, build_nerfreal, sessionid)
+    nerfreal = await asyncio.get_event_loop().run_in_executor(None, build_nerfreal,sessionid)
     nerfreals[sessionid] = nerfreal
 
     pc = RTCPeerConnection()
@@ -279,9 +249,8 @@ async def run(push_url,sessionid):
     video_sender = pc.addTrack(player.video)
 
     await pc.setLocalDescription(await pc.createOffer())
-    answer = await post(push_url, pc.localDescription.sdp)
+    answer = await post(push_url,pc.localDescription.sdp)
     await pc.setRemoteDescription(RTCSessionDescription(sdp=answer,type='answer'))
-    
 ##########################################
 # os.environ['MKL_SERVICE_FORCE_INTEL'] = '1'
 # os.environ['MULTIPROCESSING_METHOD'] = 'forkserver'                                                    
@@ -495,7 +464,6 @@ if __name__ == '__main__':
             )
         })
     # Configure CORS on all routes.
-    
     for route in list(appasync.router.routes()):
         cors.add(route)
 
