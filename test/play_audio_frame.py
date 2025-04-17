@@ -9,7 +9,7 @@ from aiortc import MediaStreamTrack
 from scipy.io import wavfile
 
 # 音频帧目录路径
-AUDIO_DIR = "/Users/jinshi/odin/project/ai/metahuman-stream/dd/dd-13s-audio-frames"
+AUDIO_DIR = "/Users/jinshi/odin/project/ai/LiveTalking_fork/data/dd/dd-13s-audio-frames"
 
 class AudioFrameTrack(MediaStreamTrack):
     kind = "audio"

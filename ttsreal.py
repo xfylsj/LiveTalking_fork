@@ -355,6 +355,8 @@ class CosyVoiceTTS(BaseTTS):
         }
         try:
             files = [('prompt_wav', ('prompt_wav', open(reffile, 'rb'), 'application/octet-stream'))]
+
+            # 收到的是一个持续输出的响应流
             res = requests.request("GET", f"{server_url}/inference_zero_shot", data=payload, files=files, stream=True)
             
             end = time.perf_counter()
@@ -597,3 +599,5 @@ class XTTS(BaseTTS):
                     idx += self.chunk
         eventpoint={'status':'end','text':text,'msgenvent':textevent}
         self.parent.put_audio_frame(np.zeros(self.chunk,np.float32),eventpoint)
+
+
