@@ -8,6 +8,7 @@
 import fractions
 import json
 import os
+import aiohttp
 import cv2
 import asyncio
 import glob
@@ -16,12 +17,27 @@ from aiohttp import web
 from av import VideoFrame, AudioFrame
 from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaBlackhole, MediaPlayer, MediaRecorder
+import argparse  # 添加到文件顶部的导入部分
 
 # 图片目录路径
 IMG_DIR = "/Users/jinshi/odin/project/ai/metahuman-stream/dd/dd-13s-video-frames"
 
-# 音频帧目录路径
-AUDIO_DIR = "/Users/jinshi/odin/project/ai/metahuman-stream/dd/dd-13s-audio-frames"
+# 添加命令行参数解析
+def parse_args():
+    parser = argparse.ArgumentParser(description="WebRTC音视频流服务器")
+    parser.add_argument("--audio_url", 
+                       type=str, 
+                       default="http://localhost:18080/audio",
+                       help="音频服务器URL")
+    parser.add_argument("--host", 
+                       type=str, 
+                       default="0.0.0.0",
+                       help="服务器监听地址")
+    parser.add_argument("--port", 
+                       type=int, 
+                       default=18081,
+                       help="服务器监听端口")
+    return parser.parse_args()
 
 class VideoImageTrack(MediaStreamTrack):
     kind = "video"
@@ -68,39 +84,72 @@ class VideoImageTrack(MediaStreamTrack):
 class AudioFrameTrack(MediaStreamTrack):
     kind = "audio"
     
-    def __init__(self):
+    def __init__(self, audio_url):
         super().__init__()
-        # 获取所有音频帧文件并按文件名排序
-        self.audio_files = sorted(glob.glob(os.path.join(AUDIO_DIR, "*")))
-        self.current_index = 0
-        self.start_time = None
+        self.audio_url = audio_url
         self.sample_rate = 16000
+        self.chunk_size = 320 * 2  # 改为固定大小：320采样点 * 2字节
+        self.session = None
+        self.response = None
+        self.buffer = b''
+        
+    async def init_connection(self):
+        if self.session is None:
+            self.session = aiohttp.ClientSession()
+        self.response = await self.session.get(self.audio_url)
+        # 跳过WAV文件头(44字节)
+        await self.response.content.read(44)
+    
+    async def stop(self):
+        """清理资源"""
+        if self.response is not None:
+            self.response.close()
+        if self.session is not None:
+            await self.session.close()
+            self.session = None
+        await super().stop()
         
     async def recv(self):
-        if self.start_time is None:
-            self.start_time = asyncio.get_event_loop().time()
+        try:
+            if self.session is None:
+                await self.init_connection()
+                
+            # 读取音频数据
+            chunk = await self.response.content.read(self.chunk_size)
+            if not chunk:
+                # 如果读完了,重新开始
+                await self.stop()  # 先清理旧的连接
+                await self.init_connection()  # 重新建立连接
+                chunk = await self.response.content.read(self.chunk_size)
+                
+            # 确保数据长度正确
+            if len(chunk) < self.chunk_size:
+                # 如果数据不足，用静音补齐
+                chunk = chunk + b'\x00' * (self.chunk_size - len(chunk))
+                
+            # 将bytes转换为numpy数组
+            audio_data = np.frombuffer(chunk, dtype=np.int16)
             
-        # 读取当前音频帧
-        audio_path = self.audio_files[self.current_index]
-        audio_data = np.load(audio_path)
-        
-        # 创建音频帧
-        frame = AudioFrame.from_ndarray(
-            audio_data.reshape(-1, 1),  # 转换为单声道
-            format="s16",  # 16位有符号整数
-            layout="mono"  # 单声道
-        )
-        frame.sample_rate = self.sample_rate
-        frame.pts = self.current_index * 320  # 每帧320个采样点
-        frame.time_base = fractions.Fraction(1, self.sample_rate)
-        
-        # 更新索引，循环播放
-        self.current_index = (self.current_index + 1) % len(self.audio_files)
-        
-        # 控制帧率(20ms每帧)
-        await asyncio.sleep(0.02)
-        
-        return frame
+            # 创建音频帧
+            frame = AudioFrame.from_ndarray(
+                audio_data.reshape(1, -1),  # 修改为 (1, 320) 的形状
+                format="s16",  # 16位有符号整数
+                layout="mono"  # 单声道
+            )
+            frame.sample_rate = self.sample_rate
+            frame.pts = int(asyncio.get_event_loop().time() * self.sample_rate)
+            frame.time_base = fractions.Fraction(1, self.sample_rate)
+            
+            # 控制帧率
+            await asyncio.sleep(0.02)
+            
+            return frame
+            
+        except Exception as e:
+            print(f"音频接收错误: {e}")
+            # 发生错误时清理资源
+            await self.stop()
+            raise
 
 async def index(request):
     content = """
@@ -262,6 +311,7 @@ async def index(request):
     """
     return web.Response(content_type="text/html", text=content)
 
+# 修改 offer 函数，接收 audio_url 参数
 async def offer(request):
     params = await request.json()
     offer = RTCSessionDescription(
@@ -272,22 +322,24 @@ async def offer(request):
     pc = RTCPeerConnection()
     pcs.add(pc)
     
+    # 创建音频轨道
+    audio_sender = AudioFrameTrack(app['audio_url'])
+    
     @pc.on("connectionstatechange")
     async def on_connectionstatechange():
         print(f"连接状态: {pc.connectionState}")
-        if pc.connectionState == "failed":
+        if pc.connectionState == "failed" or pc.connectionState == "closed":
+            try:
+                await audio_sender.stop()  # 确保使用 await
+            except Exception as e:
+                print(f"停止音频轨道时出错: {e}")
             await pc.close()
             pcs.discard(pc)
     
-    # 创建视频轨道并添加到连接中        
     video_sender = VideoImageTrack()
     pc.addTrack(video_sender)
-    
-    # 创建音频轨道并添加到连接中
-    audio_sender = AudioFrameTrack()
     pc.addTrack(audio_sender)
     
-    # 设置远程描述并创建应答
     await pc.setRemoteDescription(offer)
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
@@ -302,8 +354,13 @@ async def offer(request):
 
 pcs = set()
 app = web.Application()
+# 将参数存储在应用程序状态中
+app['audio_url'] = parse_args().audio_url
+
 app.router.add_get("/", index)
 app.router.add_post("/offer", offer)
 
 if __name__ == "__main__":
-    web.run_app(app, host="0.0.0.0", port=18080)
+    args = parse_args()
+    
+    web.run_app(app, host=args.host, port=args.port)

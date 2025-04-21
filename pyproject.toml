@@ -6,12 +6,19 @@ authors = ["xfylsj <xfylsj@gmail.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "3.12.9"
-numpy = "^2.2.4"
+python = "^3.10.0"
+numpy = "<2"
 av = "^14.3.0"
 aiortc = "^1.11.0"
 scipy = "^1.15.2"
 aiohttp = "^3.11.16"
+soundfile = "^0.13.1"
+resampy = "^0.4.3"
+pyaudio = "^0.2.14"
+requests = "^2.32.3"
+logger = "^1.4"
+torch = "^2.2.2"
+torchaudio = "^2.2.2"
 
 
 [build-system]
