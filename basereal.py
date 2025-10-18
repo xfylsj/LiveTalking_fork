@@ -74,7 +74,7 @@ class BaseReal:
         self.chunk = self.sample_rate // opt.fps # 320 samples per chunk (20ms * 16000 / 1000)
         self.sessionid = self.opt.sessionid
 
-        if opt.tts == "edgetts":
+        if opt.tts == "edgetts":            # default='edgetts'
             self.tts = EdgeTTS(opt,self)
         elif opt.tts == "gpt-sovits":
             self.tts = SovitsTTS(opt,self)
@@ -112,7 +112,7 @@ class BaseReal:
         self.tts.put_msg_txt(msg,datainfo)
     
     def put_audio_frame(self,audio_chunk,datainfo:dict={}): #16khz 20ms pcm
-        self.asr.put_audio_frame(audio_chunk,datainfo)
+        self.asr.put_audio_frame(audio_chunk,datainfo)  # self.asr 在子类中定义
 
     def put_audio_file(self,filebyte,datainfo:dict={}): 
         input_stream = BytesIO(filebyte)

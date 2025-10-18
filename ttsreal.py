@@ -51,7 +51,7 @@ class BaseTTS:
 
         self.fps = opt.fps # 每帧20毫秒
         self.sample_rate = 16000  # 采样率16kHz
-        self.chunk = self.sample_rate // self.fps # 每块320个样本(20ms * 16000 / 1000)
+        self.chunk = self.sample_rate // self.fps # 每个音频帧对应的320个样本
         self.input_stream = BytesIO()   # 16khz 20ms pcm音频流缓冲
 
         self.msgqueue = Queue()  # 消息队列
