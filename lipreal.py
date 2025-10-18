@@ -251,8 +251,8 @@ class LipReal(BaseReal):
     def __init__(self, opt, model, avatar):
         super().__init__(opt)
         #self.opt = opt # shared with the trainer's opt to support in-place modification of rendering parameters.
-        self.W = opt.W
-        self.H = opt.H
+        # self.W = opt.W
+        # self.H = opt.H
 
         self.fps = opt.fps # 20 ms per frame
         
@@ -413,6 +413,7 @@ class LipReal(BaseReal):
 
             # 如果视频轨道队列中的帧数大于等于5,则打印队列大小并等待一段时间
             if video_track._queue.qsize()>=5:
+            if video_track and video_track._queue.qsize()>=5:
                 logger.debug('sleep qsize=%d',video_track._queue.qsize())
                 time.sleep(0.04*video_track._queue.qsize()*0.8)
                 
