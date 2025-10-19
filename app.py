@@ -72,7 +72,7 @@ def build_nerfreal(sessionid:int)->BaseReal:
         nerfreal = LipReal(opt,model,avatar)
     elif opt.model == 'musetalk':
         from musereal import MuseReal
-        nerfreal = MuseReal(opt,model,avatar)
+        nerfreal = MuseReal( opt, model, avatar)
     # elif opt.model == 'ernerf':
     #     from nerfreal import NeRFReal
     #     nerfreal = NeRFReal(opt,model,avatar)
@@ -111,10 +111,14 @@ async def offer(request):
         if pc.connectionState == "failed":
             await pc.close()
             pcs.discard(pc)
-            del nerfreals[sessionid]
+            if sessionid in nerfreals:
+                nerfreals[sessionid].cleanup()
+                del nerfreals[sessionid]
         if pc.connectionState == "closed":
             pcs.discard(pc)
-            del nerfreals[sessionid]
+            if sessionid in nerfreals:
+                nerfreals[sessionid].cleanup()
+                del nerfreals[sessionid]
             gc.collect()
 
     player = HumanPlayer(nerfreals[sessionid])
@@ -276,10 +280,28 @@ async def is_speaking(request):
 
 
 async def on_shutdown(app):
+    logger.info("Application shutting down, cleaning up resources...")
+    
+    # 清理所有会话
+    for sessionid, nerfreal in list(nerfreals.items()):
+        try:
+            nerfreal.cleanup()
+        except Exception as e:
+            logger.error(f"Error cleaning up session {sessionid}: {e}")
+    
+    nerfreals.clear()
+    
     # close peer connections
     coros = [pc.close() for pc in pcs]
     await asyncio.gather(*coros)
     pcs.clear()
+    
+    # 强制垃圾回收
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
+    logger.info("Application shutdown completed")
 
 async def post(url,data):
     try:
@@ -364,7 +386,7 @@ if __name__ == '__main__':
     #     model = load_model(opt)
     #     avatar = load_avatar(opt) 
     if opt.model == 'musetalk':
-        from musereal import MuseReal,load_musetalk_model,load_musetalk_avatar,warm_up_musetalk
+        from musereal import MuseReal, load_musetalk_model, load_musetalk_avatar, warm_up_musetalk
         logger.info(opt)
         model = load_musetalk_model()
         avatar = load_musetalk_avatar(opt.avatar_id) 

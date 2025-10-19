@@ -15,6 +15,11 @@ class AudioProcessor:
     def get_audio_feature(self, wav_path, start_index=0, weight_dtype=None):
         if not os.path.exists(wav_path):
             return None
+        
+        """
+        # librosa_output可能的样子
+        librosa_output = np.array([0.1, -0.2, 0.3, -0.1, 0.05, ...], dtype=np.float32)
+        """
         librosa_output, sampling_rate = librosa.load(wav_path, sr=16000)
         assert sampling_rate == 16000
         # Split audio into 30s segments
@@ -33,6 +38,22 @@ class AudioProcessor:
             features.append(audio_feature)
 
         return features, len(librosa_output)
+    
+    def get_audio_stream_feature(self, audio_stream, start_index=0, weight_dtype=None):
+        """
+        audio_stream: 32帧音频数据的一位数组形式
+        """
+        sampling_rate = 16000
+
+        audio_feature = self.feature_extractor(
+            audio_stream,
+            return_tensors="pt",
+            sampling_rate=sampling_rate
+        ).input_features
+        if weight_dtype is not None:
+            audio_feature = audio_feature.to(dtype=weight_dtype)
+
+        return audio_feature, len(audio_stream)
 
     def get_whisper_chunk(
         self,
@@ -45,6 +66,22 @@ class AudioProcessor:
         audio_padding_length_left=2,
         audio_padding_length_right=2,
     ):
+        """
+        将音频特征转换为Whisper模型所需的格式，并生成每一帧对应的音频特征序列
+
+        Args:
+            whisper_input_features: 从音频提取的Whisper特征列表
+            device: 计算设备(CPU/GPU)
+            weight_dtype: 权重数据类型
+            whisper: Whisper模型实例
+            librosa_length: 音频长度(采样点数)
+            fps: 视频帧率,默认25fps
+            audio_padding_length_left: 音频特征左侧填充长度,默认2
+            audio_padding_length_right: 音频特征右侧填充长度,默认2
+
+        Returns:
+            audio_prompts: 每一帧对应的音频特征序列,形状为[num_frames, seq_len, hidden_dim]
+        """
         audio_feature_length_per_frame = 2 * (audio_padding_length_left + audio_padding_length_right + 1)
         whisper_feature = []
         # Process multiple 30s mel input features

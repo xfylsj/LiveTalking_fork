@@ -34,11 +34,12 @@ from queue import Queue
 from threading import Thread, Event
 import torch.multiprocessing as mp
 
+from musetalk.utils.audio_processor import AudioProcessor
 from musetalk.utils.utils import get_file_type,get_video_fps,datagen
 #from musetalk.utils.preprocessing import get_landmark_and_bbox,read_imgs,coord_placeholder
 from musetalk.myutil import get_image_blending
 from musetalk.utils.utils import load_all_model
-from musetalk.whisper.audio2feature import Audio2Feature
+# from musetalk.whisper.audio2feature import Audio2Feature
 
 from museasr import MuseASR
 import asyncio
@@ -59,7 +60,8 @@ def load_musetalk_model():
     unet.model = unet.model.half().to(device)
     #unet.model.share_memory()
     # Initialize audio processor and Whisper model
-    audio_processor = Audio2Feature(model_path="./models/whisper/tiny.pt")
+    # audio_processor = Audio2Feature(model_path="./models/whisper/tiny.pt")
+    audio_processor = AudioProcessor(feature_extractor_path="./models/whisper")
     return vae, unet, pe, timesteps, audio_processor
 
 def load_musetalk_avatar(avatar_id):
@@ -132,6 +134,10 @@ def __mirror_index(size, index):
 def inference(render_event,batch_size,input_latent_list_cycle,audio_feat_queue,audio_out_queue,res_frame_queue,
               vae, unet, pe,timesteps): #vae, unet, pe,timesteps
     
+    """
+    推理函数,用于生成音频驱动的视频帧。视频帧只有脸部大小，后期需要替换到指定图片的脸部位置
+    从 BaseASR 的 feat_queue 中获取音频特征，并送入模型生成视频帧
+    """
     # vae, unet, pe = load_diffusion_model()
     # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # timesteps = torch.tensor([0], device=device)
@@ -147,12 +153,14 @@ def inference(render_event,batch_size,input_latent_list_cycle,audio_feat_queue,a
     while render_event.is_set():
         starttime=time.perf_counter()
         try:
+            # 获取音频特征，用于推理唇形
             whisper_chunks = audio_feat_queue.get(block=True, timeout=1)
         except queue.Empty:
             continue
         is_all_silence=True
         audio_frames = []
         for _ in range(batch_size*2):
+            # 获取音频帧，用于与对应的图像帧同步发送
             frame,type,eventpoint = audio_out_queue.get()
             audio_frames.append((frame,type,eventpoint))
             if type==0:
@@ -202,7 +210,7 @@ def inference(render_event,batch_size,input_latent_list_cycle,audio_feat_queue,a
                 count=0
                 counttime=0
             for i,res_frame in enumerate(recon):
-                #self.__pushmedia(res_frame,loop,audio_track,video_track)
+                # 视频帧与对应的音频帧同步送入 res_frame_queue
                 res_frame_queue.put((res_frame,__mirror_index(length,index),audio_frames[i*2:i*2+2]))
                 index = index + 1
             #print('total batch time:',time.perf_counter()-starttime)            
@@ -226,7 +234,7 @@ class MuseReal(BaseReal):
         self.frame_list_cycle,self.mask_list_cycle,self.coord_list_cycle,self.mask_coords_list_cycle, self.input_latent_list_cycle = avatar
         #self.__loadavatar()
 
-        self.asr = MuseASR(opt,self,self.audio_processor)
+        self.asr = MuseASR(opt, self, self.audio_processor)
         self.asr.warm_up()
         
         self.render_event = mp.Event()
@@ -281,6 +289,22 @@ class MuseReal(BaseReal):
         return combine_frame
             
     def render(self,quit_event,loop=None,audio_track=None,video_track=None):
+        """ 
+
+        该函数在 webrtc.py 中 被 container.render(...) 调用
+        调用时机：
+            WebRTC 连接建立后自动调用 (PlayerStreamTrack.recv())
+            当 WebRTC 对等连接（RTCPeerConnection）建立成功后
+            浏览器或客户端开始接收媒体流时
+            aiortc 库内部会自动调用 recv() 方法来获取音频/视频帧
+        主要功能：
+            1. 启动TTS和ASR子模块的渲染处理。
+            2. 启动音频与视频的帧处理线程（process_frames），持续从缓冲区向WebRTC管道送帧。
+            3. 启动推理线程/进程（inference），将ASR特征和潜在变量送入模型生成对应的图像帧。
+            4. 管理主循环：同步控制帧速率、适当睡眠以平衡缓冲区、确保音视频流畅推送。
+            5. 根据退出事件及时安全地终止各个子线程并清理状态，保证流服务的完整关闭。
+        """
+
         #if self.opt.asr:
         #     self.asr.warm_up()
 
@@ -301,7 +325,7 @@ class MuseReal(BaseReal):
             # update texture every frame
             # audio stream thread...
             t = time.perf_counter()
-            self.asr.run_step()
+            self.asr.run_step()     # 提取音频特征
             #self.test_step(loop,audio_track,video_track)
             # totaltime += (time.perf_counter() - t)
             # count += self.opt.batch_size

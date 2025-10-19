@@ -32,7 +32,7 @@ class BaseASR:
 
         self.fps = opt.fps # 20 ms per frame
         self.sample_rate = 16000
-        self.chunk = self.sample_rate // self.fps # 320 samples per chunk (20ms * 16000 / 1000)
+        self.chunk = self.sample_rate // self.fps # 每个音频帧对应的数据块
         self.queue = Queue()
         self.output_queue = mp.Queue()
 
