@@ -27,22 +27,27 @@ from basereal import BaseReal
 
 class BaseASR:
     def __init__(self, opt, parent:BaseReal = None):
+        
         self.opt = opt
         self.parent = parent
 
-        self.fps = opt.fps # 20 ms per frame
+        self.fps = opt.fps # 50 （20 ms per frame）
         self.sample_rate = 16000
         self.chunk = self.sample_rate // self.fps # 每个音频帧对应的数据块
         self.queue = Queue()
         self.output_queue = mp.Queue()
 
         self.batch_size = opt.batch_size
+        print(f" ----BaseASR batch_size: {self.batch_size}")
 
         self.frames = []
         self.stride_left_size = opt.l
         self.stride_right_size = opt.r
         #self.context_size = 10
-        self.feat_queue = mp.Queue(2)
+        
+        # self.feat_queue = mp.Queue(2)
+        ctx = mp.get_context('spawn')
+        self.feat_queue = ctx.Queue(2)
 
         #self.warm_up()
 
@@ -63,7 +68,8 @@ class BaseASR:
                 frame = self.parent.get_audio_stream(self.parent.curr_state)
                 type = self.parent.curr_state
             else:
-                frame = np.zeros(self.chunk, dtype=np.float32)
+                # 如果既没有收到新的音频帧，也没有自定义音频状态，则填充静音帧（全为0）
+                frame = np.zeros(self.chunk, dtype=np.float32)  # 静音帧 = [0.0, 0.0, 0.0, 0.0, ... (共320个) ..., 0.0, 0.0, 0.0]
                 type = 1
             eventpoint = None
 

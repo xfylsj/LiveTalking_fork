@@ -1,5 +1,5 @@
 import os
-from .whisper import load_model
+from whisper import load_model
 import soundfile as sf
 import numpy as np
 import time
@@ -96,6 +96,7 @@ class Audio2Feature():
             whisper_chunks.append(selected_feature)  # 将选中的特征加入列表
             i += 1  # 帧索引自增，处理下一帧
             
+
         return whisper_chunks
 
     def audio2feat(self,audio_path):
@@ -134,24 +135,33 @@ def test_01():
 
 
 def test_silence():
+# INSERT_YOUR_CODE
 
     import numpy as np
 
     # 实例化 Audio2Feature
-    audio_processor = Audio2Feature(model_path="../../models/whisper/whisper_tiny.pt")
+    audio_processor = Audio2Feature(model_path="../../models/whisper/tiny.pt")
 
     # 生成长度为320的静音帧（采样率16kHz，20ms帧，float32, 全为0）
     silent_frame = np.zeros(320, dtype=np.float32)
+
+    frames = [silent_frame * 52]
+    # for i in range(52):
+    #     frames.append(silent_frame)
 
     # 测试 audio2feat 的输出（由于 audio2feat 通常输入文件路径，直接传数据按照需求仿写特征处理流程）
     # 这里仅作示例，实际audio2feat实现或许不直接接受裸数据，而是文件
     # 但我们可伪造一个短音频文件，然后测试。如果audio2feat不适用则仅演示feature2chunks
     # 假设 audio2feat 返回的输出如下（生成随机tensor以模拟其结果）:
     # array = np.random.rand(10, 384).astype(np.float32)  # 模拟10帧特征，特征维384
+    inputs = np.concatenate(frames)
 
-    array = audio_processor.audio2feat(silent_frame)
+    array = audio_processor.audio2feat(inputs)
 
     print("audio2feat 输出特征 shape:", array.shape)
+    print("audio2feat [0] len = ", array[0].__len__())
+    print("audio2feat:", array)
+
 
     fps = 25
     whisper_idx_multiplier = 50. / fps
@@ -160,13 +170,12 @@ def test_silence():
     whisper_chunks = audio_processor.feature2chunks(
         feature_array=array,
         fps=fps,
-        batch_size=4,  # 假设batch_size为4
-        start=0,
-        audio_feat_length=[2, 2]
+        batch_size=16,  # 假设batch_size为4
+        start=5,
     )
     print("feature2chunks 输出分块数量：", len(whisper_chunks))
     for idx, chunk in enumerate(whisper_chunks):
-        print(f"chunk {idx} shape: {chunk.shape}")
+        print(f"chunk {idx} shape: {chunk.shape}, content: {chunk}")
 
 
 if __name__ == "__main__":

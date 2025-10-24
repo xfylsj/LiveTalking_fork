@@ -82,6 +82,7 @@ def build_nerfreal(sessionid:int)->BaseReal:
     return nerfreal
 
 #@app.route('/offer', methods=['POST'])
+# start button
 async def offer(request):
     params = await request.json()
     offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
@@ -121,6 +122,7 @@ async def offer(request):
                 del nerfreals[sessionid]
             gc.collect()
 
+    logger.info('=== create HumanPlayer')
     player = HumanPlayer(nerfreals[sessionid])
     audio_sender = pc.addTrack(player.audio)
     video_sender = pc.addTrack(player.video)

@@ -38,7 +38,7 @@ from av import AudioFrame, VideoFrame
 import av
 from fractions import Fraction
 
-from ttsreal import EdgeTTS,SovitsTTS,XTTS,CosyVoiceTTS,FishTTS,TencentTTS,DoubaoTTS,IndexTTS2,AzureTTS
+from ttsreal import EdgeTTS,SovitsTTS,XTTS,CosyVoiceTTS,FishTTS,TencentTTS #,DoubaoTTS,AzureTTS
 from logger import logger
 
 from tqdm import tqdm
@@ -316,10 +316,15 @@ class BaseReal:
             audio_thread.start()
         
         while not quit_event.is_set():
+
+            
             try:
+   
                 res_frame,idx,audio_frames = self.res_frame_queue.get(block=True, timeout=1)
             except queue.Empty:
+                print(" process_frames -> queue.Empty -> next")
                 continue
+
             
             if enable_transition:
                 # 检测状态变化
@@ -395,6 +400,8 @@ class BaseReal:
                 self.record_audio_data(frame)
             if self.opt.transport=='virtualcam':
                 vircam.sleep_until_next_frame()
+
+            
         if self.opt.transport=='virtualcam':
             audio_thread.join()
             vircam.close()

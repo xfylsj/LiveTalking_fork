@@ -42,10 +42,29 @@ class MuseASR(BaseASR):
         
         inputs = np.concatenate(self.frames) # [N * chunk]
         whisper_feature = self.audio_processor.audio2feat(inputs)
+        # INSERT_YOUR_CODE
+        # 将whisper_feature保存到文件whisper_feature.txt中
+        with open("whisper_feature.txt", "w") as f:
+            if isinstance(whisper_feature, np.ndarray):
+                for arr in whisper_feature:
+                    f.write(" ".join(map(str, arr.tolist())))
+                    f.write("\n")
+            else:
+                f.write(str(whisper_feature))
+                f.write("\n")
         # for feature in whisper_feature:
         #     self.audio_feats.append(feature)        
         #print(f"processing audio costs {(time.time() - start_time) * 1000}ms, inputs shape:{inputs.shape} whisper_feature len:{len(whisper_feature)}")
         whisper_chunks = self.audio_processor.feature2chunks(feature_array=whisper_feature,fps=self.fps/2,batch_size=self.batch_size,start=self.stride_left_size/2 )
+
+        # INSERT_YOUR_CODE
+        # 将whisper_chunks保存到文件whisper_chunks.txt中
+        with open("whisper_chunks.txt", "w") as f:
+            for i, chunk in enumerate(whisper_chunks):
+                f.write(f"Chunk {i}:\n")
+                f.write(str(chunk))
+                f.write("\n\n")
+
         #print(f"whisper_chunks len:{len(whisper_chunks)},self.audio_feats len:{len(self.audio_feats)},self.output_queue len:{self.output_queue.qsize()}")
         #self.audio_feats = self.audio_feats[-(self.stride_left_size + self.stride_right_size):]
         self.feat_queue.put(whisper_chunks)

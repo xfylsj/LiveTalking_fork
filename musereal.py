@@ -131,7 +131,7 @@ def __mirror_index(size, index):
         return size - res - 1 
 
 @torch.no_grad()
-def inference(render_event,batch_size,input_latent_list_cycle,audio_feat_queue,audio_out_queue,res_frame_queue,
+def inference_origin(render_event,batch_size,input_latent_list_cycle,audio_feat_queue,audio_out_queue,res_frame_queue,
               vae, unet, pe,timesteps): #vae, unet, pe,timesteps
     
     """
@@ -157,6 +157,7 @@ def inference(render_event,batch_size,input_latent_list_cycle,audio_feat_queue,a
             whisper_chunks = audio_feat_queue.get(block=True, timeout=1)
         except queue.Empty:
             continue
+
         is_all_silence=True
         audio_frames = []
         for _ in range(batch_size*2):
@@ -166,13 +167,17 @@ def inference(render_event,batch_size,input_latent_list_cycle,audio_feat_queue,a
             if type==0:
                 is_all_silence=False
         if is_all_silence:
+            logger.info('is_all_silence = 1')
             for i in range(batch_size):
                 res_frame_queue.put((None,__mirror_index(length,index),audio_frames[i*2:i*2+2]))
                 index = index + 1
         else:
-            # print('infer=======')
+            print('infer=======')
             t=time.perf_counter()
-            whisper_batch = np.stack(whisper_chunks)
+
+            # ===== old code ====
+            # whisper_batch = np.stack([whisper_chunks])  # 这会创建4维张量 (1, T, 50, 384)
+            whisper_batch = whisper_chunks  # 直接使用3维张量 (T, 50, 384)
             latent_batch = []
             for i in range(batch_size):
                 idx = __mirror_index(length,index+i)
@@ -181,7 +186,8 @@ def inference(render_event,batch_size,input_latent_list_cycle,audio_feat_queue,a
             latent_batch = torch.cat(latent_batch, dim=0)
             
             # for i, (whisper_batch,latent_batch) in enumerate(gen):
-            audio_feature_batch = torch.from_numpy(whisper_batch)
+            # audio_feature_batch = torch.from_numpy(whisper_batch)  # whisper_batch 现在已经是PyTorch张量
+            audio_feature_batch = whisper_batch
             audio_feature_batch = audio_feature_batch.to(device=unet.device,
                                                             dtype=unet.model.dtype)
             audio_feature_batch = pe(audio_feature_batch)
@@ -215,6 +221,207 @@ def inference(render_event,batch_size,input_latent_list_cycle,audio_feat_queue,a
                 index = index + 1
             #print('total batch time:',time.perf_counter()-starttime)            
     logger.info('musereal inference processor stop')
+
+@torch.no_grad()
+def inference_new(render_event,batch_size,input_latent_list_cycle,audio_feat_queue,audio_out_queue,res_frame_queue,
+              vae, unet, pe,timesteps): #vae, unet, pe,timesteps
+    
+    """
+    推理函数,用于生成音频驱动的视频帧。视频帧只有脸部大小，后期需要替换到指定图片的脸部位置
+    从 BaseASR 的 feat_queue 中获取音频特征，并送入模型生成视频帧
+    """
+    # vae, unet, pe = load_diffusion_model()
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # timesteps = torch.tensor([0], device=device)
+    # pe = pe.half()
+    # vae.vae = vae.vae.half()
+    # unet.model = unet.model.half()
+    
+    length = len(input_latent_list_cycle)
+    index = 0
+    count=0
+    counttime=0
+    logger.info('start inference')
+    while render_event.is_set():
+        starttime=time.perf_counter()
+        try:
+            # 获取音频特征，用于推理唇形
+            whisper_chunks = audio_feat_queue.get(block=True, timeout=1)
+            # whisper_chunks = torch.from_numpy(whisper_chunks)   # 转回 PyTorch 张量
+            # whisper_chunks = [torch.from_numpy(a).to(unet.device) for a in whisper_chunks]
+            # print(f'whisper_chunks get = {whisper_chunks}')
+        except queue.Empty:
+            continue
+
+        is_all_silence=True
+        audio_frames = []
+        for _ in range(batch_size*2):
+            # 获取音频帧，用于与对应的图像帧同步发送
+            frame,type,eventpoint = audio_out_queue.get()
+            audio_frames.append((frame,type,eventpoint))
+            if type==0:
+                is_all_silence=False
+        if is_all_silence:
+            logger.info('is_all_silence = 1')
+            for i in range(batch_size):
+                res_frame_queue.put((None,__mirror_index(length,index),audio_frames[i*2:i*2+2]))
+                index = index + 1
+        else:
+            print('infer=======')
+            t=time.perf_counter()
+
+            
+
+            # ==== old >>>>>
+            gen = []
+            whisper_batch = np.stack(whisper_chunks)
+            latent_batch = []
+            for i in range(batch_size):
+                idx = __mirror_index(length,index+i)
+                latent = input_latent_list_cycle[idx]
+                latent_batch.append(latent)
+            latent_batch = torch.cat(latent_batch, dim=0)
+
+            # 处理音频特征
+            audio_feature_batch = torch.from_numpy(whisper_batch)
+            audio_feature_batch = audio_feature_batch.to(device=unet.device,
+                                                       dtype=unet.model.dtype)
+            # audio_feature_batch = pe(audio_feature_batch)
+            audio_feature_batch = pe(audio_feature_batch.to(device))
+
+            # latent_batch = latent_batch.to(dtype=unet.model.dtype)
+            latent_batch = latent_batch.to(device=device, dtype=unet.model.dtype)
+
+            # 使用UNet生成潜在向量
+            pred_latents = unet.model(latent_batch, 
+                                    timesteps, 
+                                    encoder_hidden_states=audio_feature_batch).sample
+            
+            pred_latents = pred_latents.to(device=device, dtype=vae.vae.dtype)
+            
+            # 使用VAE解码生成图像
+            recon = vae.decode_latents(pred_latents)
+
+            # ==== old <<<<<
+            
+            # ===== new code ====
+            gen = datagen(whisper_chunks, input_latent_list_cycle, batch_size)    
+            device = unet.device
+
+            for _, (whisper_batch, latent_batch) in enumerate(gen):
+                # 编码音频特征并推理当前批次
+                audio_feature_batch = pe(whisper_batch.to(device))
+                latent_batch = latent_batch.to(device=device, dtype=unet.model.dtype)
+                pred_latents = unet.model(latent_batch, timesteps, encoder_hidden_states=audio_feature_batch).sample
+                pred_latents = pred_latents.to(device=device, dtype=vae.vae.dtype)
+                recon = vae.decode_latents(pred_latents)
+                # for res_frame in recon:
+                    # res_frame_queue.put(res_frame)
+                for i,res_frame in enumerate(recon):
+                    # 视频帧与对应的音频帧同步送入 res_frame_queue
+                    res_frame_queue.put((res_frame,__mirror_index(length,index),audio_frames[i*2:i*2+2]))
+                    index = index + 1
+            
+            counttime += (time.perf_counter() - t)
+            count += batch_size
+            #_totalframe += 1
+            if count>=100:
+                logger.info(f"------actual avg infer fps:{count/counttime:.4f}")
+                count=0
+                counttime=0
+                
+            #print('total batch time:',time.perf_counter()-starttime)            
+    logger.info('musereal inference processor stop')
+
+@torch.no_grad()
+def inference(render_event,batch_size,input_latent_list_cycle,audio_feat_queue,audio_out_queue,res_frame_queue,
+              vae, unet, pe,timesteps): #vae, unet, pe,timesteps
+    
+    """
+    推理函数,用于生成音频驱动的视频帧。视频帧只有脸部大小，后期需要替换到指定图片的脸部位置
+    从 BaseASR 的 feat_queue 中获取音频特征，并送入模型生成视频帧
+    """
+    # vae, unet, pe = load_diffusion_model()
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # timesteps = torch.tensor([0], device=device)
+    # pe = pe.half()
+    # vae.vae = vae.vae.half()
+    # unet.model = unet.model.half()
+    
+    length = len(input_latent_list_cycle)
+    index = 0
+    count=0
+    counttime=0
+    logger.info('start inference')
+    while render_event.is_set():
+        starttime=time.perf_counter()
+        try:
+            # 获取音频特征，用于推理唇形
+            whisper_chunks = audio_feat_queue.get(block=True, timeout=1)
+            whisper_chunks = torch.from_numpy(whisper_chunks)   # 转回 PyTorch 张量
+            # whisper_chunks = [torch.from_numpy(a).to(unet.device) for a in whisper_chunks]
+            # print(f'whisper_chunks get = {whisper_chunks}')
+        except queue.Empty:
+            continue
+
+        is_all_silence=True
+        audio_frames = []
+        for _ in range(batch_size*2):
+            # 获取音频帧，用于与对应的图像帧同步发送
+            frame,type,eventpoint = audio_out_queue.get()
+            audio_frames.append((frame,type,eventpoint))
+            if type==0:
+                is_all_silence=False
+        if is_all_silence:
+            logger.info('is_all_silence = 1')
+            for i in range(batch_size):
+                res_frame_queue.put((None,__mirror_index(length,index),audio_frames[i*2:i*2+2]))
+                index = index + 1
+        else:
+            print('infer=======')
+            t=time.perf_counter()
+
+            device = unet.device
+            
+
+            latent_batch = []
+            for i in range(batch_size):
+                idx = __mirror_index(length,index+i)
+                latent = input_latent_list_cycle[idx]
+                latent_batch.append(latent)
+            latent_batch = torch.cat(latent_batch, dim=0)
+            # 处理音频特征
+            audio_feature_batch = whisper_chunks.to(device=unet.device,
+                                                       dtype=unet.model.dtype)
+            audio_feature_batch = pe(audio_feature_batch.to(device))
+            latent_batch = latent_batch.to(device=device, dtype=unet.model.dtype)
+
+            # 使用UNet生成潜在向量
+            pred_latents = unet.model(latent_batch, 
+                                    timesteps, 
+                                    encoder_hidden_states=audio_feature_batch).sample
+            
+            pred_latents = pred_latents.to(device=device, dtype=vae.vae.dtype)
+            # 使用VAE解码生成图像
+            recon = vae.decode_latents(pred_latents)
+
+  
+            for i,res_frame in enumerate(recon):
+                # 视频帧与对应的音频帧同步送入 res_frame_queue
+                res_frame_queue.put((res_frame,__mirror_index(length,index),audio_frames[i*2:i*2+2]))
+                index = index + 1
+        
+            counttime += (time.perf_counter() - t)
+            count += batch_size
+            #_totalframe += 1
+            if count>=100:
+                logger.info(f"------actual avg infer fps:{count/counttime:.4f}")
+                count=0
+                counttime=0
+                
+            #print('total batch time:',time.perf_counter()-starttime)            
+    logger.info('musereal inference processor stop')
+
 
 class MuseReal(BaseReal):
     @torch.no_grad()
@@ -326,23 +533,14 @@ class MuseReal(BaseReal):
             # audio stream thread...
             t = time.perf_counter()
             self.asr.run_step()     # 提取音频特征
-            #self.test_step(loop,audio_track,video_track)
-            # totaltime += (time.perf_counter() - t)
-            # count += self.opt.batch_size
-            # if count>=100:
-            #     print(f"------actual avg infer fps:{count/totaltime:.4f}")
-            #     count=0
-            #     totaltime=0
-            if video_track and video_track._queue.qsize()>=1.5*self.opt.batch_size:
-                logger.debug('sleep qsize=%d',video_track._queue.qsize())
-                time.sleep(0.04*video_track._queue.qsize()*0.8)
-            # if video_track._queue.qsize()>=5:
-            #     print('sleep qsize=',video_track._queue.qsize())
-            #     time.sleep(0.04*video_track._queue.qsize()*0.8)
-                
-            # delay = _starttime+_totalframe*0.04-time.perf_counter() #40ms
-            # if delay > 0:
-            #     time.sleep(delay)
+
+
+            # 如果视频轨（video_track）对象存在，且其内部帧队列（_queue）长度超过 1.5 倍 batch_size，则主动休眠（放慢渲染），以防缓冲区积压过多帧导致内存占用过高或延迟堆积 
+            if video_track and video_track._queue.qsize() >= 1.5 * self.opt.batch_size:
+                logger.debug('sleep qsize=%d', video_track._queue.qsize())
+                time.sleep(0.04 * video_track._queue.qsize() * 0.8)
+  
+  
         self.render_event.clear() #end infer process render
         logger.info('musereal thread stop')
             

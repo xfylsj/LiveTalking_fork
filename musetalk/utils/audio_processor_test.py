@@ -187,38 +187,59 @@ class AudioProcessor:
         # 确保采样率为16000Hz
         sampling_rate = 16000
         
-    
-        """
-        # 输出是一个字典，包含：
-            {
-                'input_features': tensor(...),  # 形状为 (batch_size, 50, 384)
-                'attention_mask': tensor(...)   # 注意力掩码
-            }
-        """
-        audio_feature = self.feature_extractor(
-            audio_stream_data,
-            return_tensors="pt",
-            sampling_rate=sampling_rate
-        ).input_features
-        print(f"--- audio_feature.shape: {audio_feature.shape}")
-        """
-            audio_feature.shape = torch.Size([1, 80, 3000])
-            - 形状含义: [batch, n_mels, n_frames] = [1, 80, 3000]
-            -- 1: 单个样本的 batch
-            -- 80: 梅尔滤波器组数量（Whisper 固定 80 维）
-            -- 3000: 时间帧数。Whisper 提取器以 16 kHz 采样、hop_length=160（每帧 10 ms，100 fps）生成 30 s 的对数梅尔谱，所以 30 s × 100 fps = 3000 帧
-            - 短音频也会被右侧零填充到 3000 帧；长音频会被分段处理，每段各自得到一个 [1, 80, 3000]。
-            - 进入 whisper.encoder 后，时间维会因下采样从 3000 变为 1500（约 50 fps），随后你的代码把各层隐藏态堆叠，变成类似 [1, 1500, num_layers, hidden_dim]，再按时间维拼接多个片段。
-        """
-        # 如果指定了权重数据类型,则进行转换
-        if weight_dtype is not None:
-            audio_feature = audio_feature.to(dtype=weight_dtype)
-        # features.append(audio_feature)
+        # 将音频流分割成30秒的片段进行处理
+        segment_length = 30 * sampling_rate
+        segments = []
+        
+        # 按30秒片段分割音频流
+        for i in range(0, len(audio_stream_data), segment_length):
+            segment = audio_stream_data[i:i + segment_length]
+            # 如果最后一个片段不足30秒，用零填充
+            if len(segment) < segment_length:
+                segment = np.pad(segment, (0, segment_length - len(segment)), 'constant')
+            segments.append(segment)
 
-        return audio_feature, len(audio_stream_data)
+        print(f"---segments length: {len(segments)}")
+
+        # 提取每个片段的特征
+        features = []
+        for segment in segments:
+            # 使用特征提取器提取音频特征
+            """
+            # 输出是一个字典，包含：
+                {
+                    'input_features': tensor(...),  # 形状为 (batch_size, 50, 384)
+                    'attention_mask': tensor(...)   # 注意力掩码
+                }
+            """
+            audio_feature = self.feature_extractor(
+                segment,
+                return_tensors="pt",
+                sampling_rate=sampling_rate
+            ).input_features
+
+            print(f"--- audio_feature.shape: {audio_feature.shape}")
+
+            """
+                audio_feature.shape = torch.Size([1, 80, 3000])
+                - 形状含义: [batch, n_mels, n_frames] = [1, 80, 3000]
+                -- 1: 单个样本的 batch
+                -- 80: 梅尔滤波器组数量（Whisper 固定 80 维）
+                -- 3000: 时间帧数。Whisper 提取器以 16 kHz 采样、hop_length=160（每帧 10 ms，100 fps）生成 30 s 的对数梅尔谱，所以 30 s × 100 fps = 3000 帧
+
+                - 短音频也会被右侧零填充到 3000 帧；长音频会被分段处理，每段各自得到一个 [1, 80, 3000]。
+                - 进入 whisper.encoder 后，时间维会因下采样从 3000 变为 1500（约 50 fps），随后你的代码把各层隐藏态堆叠，变成类似 [1, 1500, num_layers, hidden_dim]，再按时间维拼接多个片段。
+            """
+
+            # 如果指定了权重数据类型,则进行转换
+            if weight_dtype is not None:
+                audio_feature = audio_feature.to(dtype=weight_dtype)
+            features.append(audio_feature)
+
+        return features, len(audio_stream_data)
 
 
-    def get_whisper_chunk_origin(
+    def get_whisper_chunk(
         self,
         whisper_input_features,
         device,
@@ -236,9 +257,9 @@ class AudioProcessor:
             input_feature = input_feature.to(device).to(weight_dtype)
             audio_feats = whisper.encoder(input_feature, output_hidden_states=True).hidden_states
             audio_feats = torch.stack(audio_feats, dim=2)
-            # segment_duration_frames = 50 * 1  # 3秒对应的帧数 TODO: 时间长度可能会改
+            segment_duration_frames = 50 * 1  # 3秒对应的帧数 TODO: 时间长度可能会改
             # 裁剪到实际3秒长度，避免30秒填充的影响
-            # audio_feats = audio_feats[:, :segment_duration_frames, :, :]
+            audio_feats = audio_feats[:, :segment_duration_frames, :, :]
 
             whisper_feature.append(audio_feats)
 
@@ -281,79 +302,6 @@ class AudioProcessor:
         audio_prompts = rearrange(audio_prompts, 'b c h w -> b (c h) w')
         return audio_prompts
 
-    def get_whisper_chunk(
-        self,
-        whisper_input_features,
-        device,
-        weight_dtype,
-        whisper,
-        librosa_length,
-        fps=25,
-        audio_padding_length_left=2,
-        audio_padding_length_right=2,
-    ):
-
-        # Trim the last segment to remove padding
-        sr = 16000
-        audio_fps = 50
-        fps = int(fps)
-        whisper_idx_multiplier = audio_fps / fps
-        num_frames = math.floor((librosa_length / sr) * fps)
-        actual_length = math.floor((librosa_length / sr) * audio_fps)
-        
-        audio_feature_length_per_frame = 2 * (audio_padding_length_left + audio_padding_length_right + 1)
-        whisper_feature = []
-
-
-        # for input_feature in whisper_input_features:
-        input_feature = whisper_input_features.to(device).to(weight_dtype)
-        audio_feats = whisper.encoder(input_feature, output_hidden_states=True).hidden_states
-        audio_feats = torch.stack(audio_feats, dim=2)
-   
-        # 裁剪到实际长度，避免30秒填充的影响
-        whisper_feature = audio_feats[:, :actual_length, :, :]
-            
-        # Calculate padding amount
-        padding_nums = math.ceil(whisper_idx_multiplier)
-        # Add padding at start and end
-        whisper_feature = torch.cat([
-            torch.zeros_like(whisper_feature[:, :padding_nums * audio_padding_length_left]),
-            whisper_feature,
-            # Add extra padding to prevent out of bounds
-            torch.zeros_like(whisper_feature[:, :padding_nums * 3 * audio_padding_length_right])
-        ], 1)
-
-        audio_prompts = []
-        for frame_index in range(num_frames):
-            try:
-                audio_index = math.floor(frame_index * whisper_idx_multiplier)
-                audio_clip = whisper_feature[:, audio_index: audio_index + audio_feature_length_per_frame]
-                assert audio_clip.shape[1] == audio_feature_length_per_frame
-                audio_prompts.append(audio_clip)
-            except Exception as e:
-                print(f"Error occurred: {e}")
-                print(f"whisper_feature.shape: {whisper_feature.shape}")
-                print(f"audio_clip.shape: {audio_clip.shape}")
-                print(f"num frames: {num_frames}, fps: {fps}, whisper_idx_multiplier: {whisper_idx_multiplier}")
-                print(f"frame_index: {frame_index}, audio_index: {audio_index}-{audio_index + audio_feature_length_per_frame}")
-                exit()
-
-        audio_prompts = torch.cat(audio_prompts, dim=0)  # T, 10, 5, 384
-        audio_prompts = rearrange(audio_prompts, 'b c h w -> b (c h) w')
-
-        print(">>>>>>>>>>>>>>>>>>>>")
-        print(f"whisper_feature.shape: {whisper_feature.shape}")
-        print(f"num_frames: {num_frames}, fps: {fps}, whisper_idx_multiplier: {whisper_idx_multiplier}")
-        print(f"actual_length: {actual_length}")
-        print(f"audio_padding_length_left: {audio_padding_length_left}, audio_padding_length_right: {audio_padding_length_right}")
-        print(f"padding_nums: {padding_nums}")
-        print(f"audio_feature_length_per_frame: {audio_feature_length_per_frame}")
-        print(f"audio_prompts.shape: {audio_prompts.shape}")
-        print(">>>>>>>>>>>>>>>>>>>>")
-
-        return audio_prompts
-
-
 def test_01():
     # audio_processor = AudioProcessor()
     # wav_path = "./2.wav"
@@ -361,7 +309,7 @@ def test_01():
     # print("Audio Feature shape:", audio_feature.shape)
     # print("librosa_feature_length:", librosa_feature_length)
 
-    audio_processor = AudioProcessor("../../models/whisper")
+    audio_processor = AudioProcessor("../../models/whisper/tiny.pt")
     wav_path = "./data/audio/dd.wav"
     
     # --- 测试传统音频文件处理
@@ -392,35 +340,23 @@ def test_01():
 def test_silence():
     import torch
     from transformers import WhisperModel
-    from musetalk.utils.utils import load_all_model
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    vae, unet, pe = load_all_model()
-    
-    timesteps = torch.tensor([0], device=device)  # 设置时间步
-
-    # 将模型转换为半精度并移至指定设备
-    pe = pe.half().to(device)
-    vae.vae = vae.vae.half().to(device)
-    unet.model = unet.model.half().to(device)
-    
     # 设置设备和模型
-    weight_dtype = unet.model.dtype
-    whisper = WhisperModel.from_pretrained("../../models/whisper")
-    whisper = whisper.to(device=device, dtype=weight_dtype).eval()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    whisper = WhisperModel.from_pretrained("../../models/whisper/tiny.pt")
+    whisper = whisper.to(device=device, dtype=torch.float16).eval()
     whisper.requires_grad_(False)
     
     # 创建 AudioProcessor 实例（需根据实际模型路径调整）
-    audio_processor = AudioProcessor("../../models/whisper")
+    audio_processor = AudioProcessor("../../models/whisper/tiny.pt")
 
     # 生成长度为320的静音帧（float32, 全为0，采样率16kHz，20ms帧）
     silent_frame = np.zeros(320, dtype=np.float32)
-    # frames = [silent_frame * 52]
-    frames = [silent_frame.copy() for _ in range(52)]
+    frames = [silent_frame * 52]
     inputs = np.concatenate(frames)
 
     # 调用 get_audio_stream_feature，获取特征
-    feature, feature_length = audio_processor.get_audio_stream_feature(inputs, weight_dtype=weight_dtype)
+    feature, feature_length = audio_processor.get_audio_stream_feature(inputs)
     print("静音帧特征 shape:", feature[0].shape if feature else "None")
     print("特征长度:", feature_length)
 
@@ -430,7 +366,7 @@ def test_silence():
     whisper_chunks = audio_processor.get_whisper_chunk(
         feature,                    # whisper_input_features
         device,                    # 计算设备
-        weight_dtype,            # 权重数据类型
+        torch.float16,            # 权重数据类型
         whisper,                  # Whisper模型实例
         feature_length,           # librosa_length (音频长度)
         fps=25,                   # 视频帧率
